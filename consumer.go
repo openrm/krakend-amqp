@@ -1,6 +1,7 @@
 package amqp
 
 import (
+	"net/http"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/devopsfaith/krakend/config"
 	"github.com/devopsfaith/krakend/proxy"
+	"github.com/devopsfaith/krakend/encoding"
 )
 
 const consumerNamespace = "github.com/devopsfaith/krakend-amqp/consume"
@@ -138,25 +140,58 @@ func getConsumerConfig(remote *config.Backend) (*consumerCfg, error) {
 	return cfg, err
 }
 
-func consumerBackend(remote *config.Backend, msgs <-chan amqp.Delivery) proxy.Proxy {
+func decodeMessage(remote *config.Backend, msg amqp.Delivery) (*proxy.Response, error) {
+	headers := http.Header{}
+	for k, v := range msg.Headers {
+		if s, ok := v.(string); ok {
+			headers.Add(k, s)
+		}
+	}
+	if msg.ContentType != "" {
+		headers.Add("Content-Type", msg.ContentType)
+	}
+
+	if remote.Encoding == encoding.NOOP {
+		return &proxy.Response{
+			Data:       map[string]interface{}{},
+			IsComplete: true,
+			Io:         bytes.NewReader(msg.Body),
+			Metadata:   proxy.Metadata{
+				Headers:    headers,
+			},
+		}, nil
+	}
+
+	var data map[string]interface{}
+	err := remote.Decoder(bytes.NewBuffer(msg.Body), &data)
+	if err != nil && err != io.EOF {
+		msg.Ack(false)
+		return nil, err
+	}
+
+	msg.Ack(true)
+
 	ef := proxy.NewEntityFormatter(remote)
+
+	newResponse := proxy.Response{
+		Data:       data,
+		IsComplete: true,
+		Metadata:   proxy.Metadata{Headers: headers},
+	}
+	newResponse = ef.Format(newResponse)
+
+	fmt.Println(newResponse)
+
+	return &newResponse, nil
+}
+
+func consumerBackend(remote *config.Backend, msgs <-chan amqp.Delivery) proxy.Proxy {
 	return func(ctx context.Context, _ *proxy.Request) (*proxy.Response, error) {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case msg := <-msgs:
-			var data map[string]interface{}
-			err := remote.Decoder(bytes.NewBuffer(msg.Body), &data)
-			if err != nil && err != io.EOF {
-				msg.Ack(false)
-				return nil, err
-			}
-
-			msg.Ack(true)
-
-			newResponse := proxy.Response{Data: data, IsComplete: true}
-			newResponse = ef.Format(newResponse)
-			return &newResponse, nil
+			return decodeMessage(remote, msg)
 		}
 	}
 }
