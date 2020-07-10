@@ -108,7 +108,7 @@ func (f backendFactory) initRpc(ctx context.Context, remote *config.Backend) (pr
 
 		correlationId := uuid.NewV4().String()
 
-		listener := make(chan amqp.Delivery)
+		listener := make(chan amqp.Delivery, 1)
 		listeners.Store(correlationId, listener)
 		defer listeners.Delete(listener)
 
@@ -157,9 +157,7 @@ func (f backendFactory) initRpc(ctx context.Context, remote *config.Backend) (pr
 		for {
 			select {
 			case reply := <-listener:
-				if reply.CorrelationId == correlationId {
-					return decodeMessage(remote, reply)
-				}
+				return decodeMessage(remote, reply)
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
