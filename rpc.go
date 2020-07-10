@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"strconv"
 	"time"
+	"sync"
 
 	"github.com/streadway/amqp"
 	"github.com/go-contrib/uuid"
@@ -82,9 +83,21 @@ func (f backendFactory) initRpc(ctx context.Context, remote *config.Backend) (pr
 		return proxy.NoopProxy, err
 	}
 
+	listeners := new(sync.Map)
+
 	go func() {
-		<-ctx.Done()
-		close()
+		for {
+			select {
+			case <-ctx.Done():
+				close()
+				break
+			case reply := <-replies:
+				if v, ok := listeners.Load(reply.CorrelationId); ok {
+					listener := v.(chan amqp.Delivery)
+					listener <- reply
+				}
+			}
+		}
 	}()
 
 	return func(ctx context.Context, r *proxy.Request) (*proxy.Response, error) {
@@ -94,6 +107,10 @@ func (f backendFactory) initRpc(ctx context.Context, remote *config.Backend) (pr
 		}
 
 		correlationId := uuid.NewV4().String()
+
+		listener := make(chan amqp.Delivery)
+		listeners.Store(correlationId, listener)
+		defer listeners.Delete(listener)
 
 		contentType := ""
 		headers := amqp.Table{}
@@ -139,7 +156,7 @@ func (f backendFactory) initRpc(ctx context.Context, remote *config.Backend) (pr
 
 		for {
 			select {
-			case reply := <-replies:
+			case reply := <-listener:
 				if reply.CorrelationId == correlationId {
 					return decodeMessage(remote, reply)
 				}
