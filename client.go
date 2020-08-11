@@ -40,6 +40,10 @@ func (f backendFactory) New(remote *config.Backend) proxy.Proxy {
 		return prxy
 	}
 
+	if prxy, err := f.initRpc(f.ctx, remote); err == nil {
+		return prxy
+	}
+
 	return f.bf(remote)
 }
 
@@ -58,6 +62,7 @@ func nopCloser() error { return nil }
 
 type queueCfg struct {
 	Name          string   `json:"name"`
+	ExchangeType  string   `json:"type"`
 	Exchange      string   `json:"exchange"`
 	RoutingKey    []string `json:"routing_key"`
 	Durable       bool     `json:"durable"`
